@@ -1,0 +1,14 @@
+{application, fyltester, [
+  {description, "Fyltester: integration tests for Fyler"},
+  {vsn, "0.0.1"},
+  {registered, []},
+  {applications, [
+    kernel,
+    stdlib,
+    lager,
+    cowboy,
+    ibrowse
+  ]},
+  {mod, {fyltester_app, []}},
+  {env, []}
+]}.

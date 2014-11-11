@@ -1,0 +1,12 @@
+{http_port, 8080}.
+{login, "test"}.
+{pass, "test"}.
+{tasks, [
+  {"stream_1.flv", video_to_mp4_webm},
+  {"v3.avi", video_to_mp4_webm}
+]}.
+{dir, "../fyler/apps/fyler/src/tests/support"}.
+{aws_s3_bucket, "tbconvert"}.
+{aws_dir, "fyltester"}.
+{fyler, "http://localhost:8008"}.
+{fyltester, "http://localhost:8080"}.

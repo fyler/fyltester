@@ -1,0 +1,10 @@
+{application,fyltester,
+             [{description,"Fyltester: integration tests for Fyler"},
+              {vsn,"0.0.1"},
+              {registered,[]},
+              {applications,[kernel,stdlib,lager,cowboy,ibrowse]},
+              {mod,{fyltester_app,[]}},
+              {env,[]},
+              {modules,[aws_cli,callback_handler,fyltester,fyltester_app,
+                        fyltester_server,fyltester_sup,notfound_handler,
+                        stats_handler]}]}.

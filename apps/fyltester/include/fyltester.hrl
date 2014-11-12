@@ -9,6 +9,7 @@
   status = queued :: queued | progress | success | failed,
   file :: string(),
   type :: atom(),
+  category :: atom(),
   start_ts = 0:: non_neg_integer(),
   ts = 0:: non_neg_integer()
 }).

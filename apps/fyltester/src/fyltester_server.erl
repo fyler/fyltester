@@ -53,18 +53,19 @@ init([]) ->
 
   ets:new(?T_TASKS, [public, named_table, {keypos, #task.id}]),
 
+  Session = new_session(),
+
   Dir = ?Config(dir, ""),
   AwsDir = ?Config(aws_s3_bucket, "tbconvert") ++ "/" ++ ?Config(aws_dir, "fyltester") ++ "/",
-  Tasks = ?Config(tasks, []),
-  fill_table(Tasks),
+  Tasks = fill_table(?Config(tasks, [])),
 
   Login = ?Config(login, ""),
   Pass = ?Config(pass, ""),
 
   Fyler = ?Config(fyler, "http://localhost:8008"),
-  Callback = ?Config(fyltester, "http://localhost:8080") ++ "/callback/",
+  Callback = io_lib:format("~s:~p/callback/~s/", [?Config(fyltester, "http://localhost"), ?Config(http_port, 8080), Session]),
 
-  start_http_server(),
+  start_http_server(Session),
 
   self() ! start,
 
@@ -75,9 +76,9 @@ handle_call(_Request, _From, State) ->
 
 handle_cast({task_complete, Id, Status}, State) ->
   case ets:lookup(?T_TASKS, Id) of
-    [#task{start_ts = Start} = Task] ->
+    [#task{start_ts = Start, category = Category} = Task] ->
       ets:insert(?T_TASKS, Task#task{status = Status, ts = ulitos:timestamp() - Start}),
-      self() ! start_task;
+      self() ! {start_task, Category};
     _ ->
       ?E("Invalid task id")
   end,
@@ -86,18 +87,40 @@ handle_cast({task_complete, Id, Status}, State) ->
 handle_cast(_Request, State) ->
   {noreply, State}.
 
-handle_info(start, #state{dir = Dir, aws_dir = AwsDir} = State) ->
+handle_info(start, #state{tasks = Tasks, dir = Dir, aws_dir = AwsDir} = State) ->
   aws_cli:copy_folder(Dir, "s3://" ++ AwsDir),
-  self() ! start_task,
+  [self() ! {start_task, Category} || Category <- maps:keys(Tasks)],
   {noreply, State};
 
-handle_info(start_task, #state{tasks = [{File, Type}|Tasks], counter = Counter, fyler = Fyler, aws_dir = AwsDir, loginpass = LoginPass, callback = Callback} = State) ->
-  {ok, Token} = login(Fyler, LoginPass),
-  URL = Fyler ++ "/api/tasks",
-  Body = io_lib:format("url=~s~s~s&type=~p&callback=~s~p&fkey=~s", [?Prefix, AwsDir, File, Type, Callback, Counter, Token]),
-  ibrowse:send_req(URL, [], post, Body),
-  ets:insert(?T_TASKS, #task{id = Counter, file = File, type = Type, start_ts = ulitos:timestamp(), status = progress}),
-  {noreply, State#state{tasks = Tasks, counter = Counter + 1}};
+handle_info({start_task, Category}, #state{tasks = Tasks, fyler = Fyler, aws_dir = AwsDir, loginpass = LoginPass, callback = Callback} = State) ->
+  case maps:get(Category, Tasks, []) of
+    [Id|Ids] ->
+      case ets:lookup(?T_TASKS, Id) of
+        [#task{file = File, type = Type} = Task] ->
+          case login(Fyler, LoginPass) of
+            {ok, Token} ->
+              URL = Fyler ++ "/api/tasks",
+              Body = io_lib:format("url=~s~s~s&type=~p&callback=~s~p&fkey=~s", [?Prefix, AwsDir, File, Type, Callback, Id, Token]),
+              ?D({"Starting new task", File, Type}),
+              case ibrowse:send_req(URL, [], post, Body) of
+                {ok, "200", _, _} ->
+                  ets:insert(?T_TASKS, Task#task{start_ts = ulitos:timestamp(), status = progress});
+                _Smth ->
+                  ?E({"Failed to start task", File, Type, _Smth}),
+                  self() ! {start_task, Category},
+                  ets:insert(?T_TASKS, Task#task{status = faied})
+              end;
+            auth_failed ->
+              self() ! {start_task, Category},
+              ets:insert(?T_TASKS, Task#task{status = faied})
+          end,
+          {noreply, State#state{tasks = maps:put(Category, Ids, Tasks)}};
+        _ ->
+          {noreply, State}
+      end;
+    [] ->
+      {noreply, State}
+  end;
 
 handle_info(_Info, State) ->
   {noreply, State}.
@@ -112,12 +135,12 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
-start_http_server() ->
+start_http_server(Session) ->
   Dispatch = cowboy_router:compile([
     {'_', [
       {"/", stats_handler, []},
       {"/stats", stats_handler, []},
-      {"/callback/:id", [{id, int}], callback_handler, []},
+      {"/callback/" ++ Session ++ "/:id", [{id, int}], callback_handler, []},
       {'_', notfound_handler, []}
     ]}
   ]),
@@ -134,16 +157,41 @@ login(Fyler, LoginPass) ->
       {ok, binary_to_list(Fkey)};
     {ok, "401", _Headers, _Body} ->
       ?E("Wrong login or password"),
-      auth_faled;
+      auth_failed;
     _ ->
       auth_failed
   end.
 
 fill_table(Tasks) ->
-  ets:insert(?T_TASKS, fill_table(Tasks, 1, [])).
+  fill_table(Tasks, #{}, 1).
 
-fill_table([{File, Type}|Tasks], Counter, Acc) ->
-  fill_table(Tasks, Counter + 1, [#task{id = Counter, file = File, type = Type}|Acc]);
+fill_table([{Category, Tasks}|Other], Map, N) ->
+  {NewN, Ids, TasksForTable} = fill_table(Category, Tasks, N, [], []),
+  ets:insert(?T_TASKS, TasksForTable),
+  fill_table(Other, maps:put(Category, Ids, Map), NewN);
 
-fill_table([], _Counter, Acc) ->
-  Acc.
+fill_table([], Map, _N) ->
+  Map.
+
+fill_table(Category, [{File, Type}|Tasks], Counter, Acc1, Acc2) ->
+  fill_table(Category, Tasks, Counter + 1, [Counter|Acc1], [#task{id = Counter, file = File, type = Type, category = Category}|Acc2]);
+
+fill_table(_Category, [], Counter, Acc1, Acc2) ->
+  {Counter, lists:reverse(Acc1), Acc2}.
+
+new_session() ->
+  random:seed(erlang:now()),
+  Length = random:uniform(4) + 4,
+  random_string(Length).
+
+random_string(0) -> [];
+
+random_string(Length) -> [random_char() | random_string(Length-1)].
+
+random_char() ->
+  N = random:uniform(62),
+  if
+    N < 11 -> N + 47;
+    N < 37 -> N + 54;
+    true -> N + 60
+  end.

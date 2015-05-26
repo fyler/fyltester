@@ -2,7 +2,7 @@
              [{description,"Fyltester: integration tests for Fyler"},
               {vsn,"0.0.1"},
               {registered,[]},
-              {applications,[kernel,stdlib,lager,cowboy,ibrowse]},
+              {applications,[kernel,stdlib,lager,cowboy,hackney]},
               {mod,{fyltester_app,[]}},
               {env,[]},
               {modules,[aws_cli,callback_handler,fyltester,fyltester_app,

@@ -62,10 +62,12 @@ init([]) ->
   Login = ?Config(login, ""),
   Pass = ?Config(pass, ""),
 
-  Fyler = ?Config(fyler, "http://localhost:8008"),
-  Callback = io_lib:format("~s:~p/callback/~s/", [?Config(fyltester, "http://localhost"), ?Config(http_port, 8080), Session]),
+  Fyler = iolist_to_binary(?Config(fyler, "http://localhost:8008")),
+  Callback = iolist_to_binary(io_lib:format("~s:~p/callback/~s/", [?Config(fyltester, "http://localhost"), ?Config(http_port, 8080), Session])),
 
   start_http_server(Session),
+
+  hackney:start(),
 
   self() ! start,
 
@@ -99,20 +101,20 @@ handle_info({start_task, Category}, #state{tasks = Tasks, fyler = Fyler, aws_dir
         [#task{file = File, type = Type} = Task] ->
           case login(Fyler, LoginPass) of
             {ok, Token} ->
-              URL = Fyler ++ "/api/tasks",
-              Body = io_lib:format("url=~s~s~s&type=~p&callback=~s~p&fkey=~s", [?Prefix, AwsDir, File, Type, Callback, Id, Token]),
+              URL = <<Fyler/binary, "/api/tasks">>,
+              Body = iolist_to_binary(io_lib:format("url=~s~s~s&type=~p&callback=~s~p&fkey=~s", [?Prefix, AwsDir, File, Type, Callback, Id, Token])),
               ?D({"Starting new task", File, Type}),
-              case ibrowse:send_req(URL, [], post, Body) of
-                {ok, "200", _, _} ->
+              case hackney:post(URL, [], Body, []) of
+                {ok, 200, _, _} ->
                   ets:insert(?T_TASKS, Task#task{start_ts = ulitos:timestamp(), status = progress});
                 _Smth ->
                   ?E({"Failed to start task", File, Type, _Smth}),
                   self() ! {start_task, Category},
-                  ets:insert(?T_TASKS, Task#task{status = faied})
+                  ets:insert(?T_TASKS, Task#task{status = failed})
               end;
             auth_failed ->
               self() ! {start_task, Category},
-              ets:insert(?T_TASKS, Task#task{status = faied})
+              ets:insert(?T_TASKS, Task#task{status = failed})
           end,
           {noreply, State#state{tasks = maps:put(Category, Ids, Tasks)}};
         _ ->
@@ -145,17 +147,22 @@ start_http_server(Session) ->
     ]}
   ]),
   Port = ?Config(http_port, 8080),
-  cowboy:start_http(http_listener, 100,
+  cowboy:start_http(http_listener, 20,
     [{port, Port}],
     [{env, [{dispatch, Dispatch}]}]
   ).
 
 login(Fyler, LoginPass) ->
-  case ibrowse:send_req(Fyler ++ "/api/auth", [], post, LoginPass) of
-    {ok, "200", _Headers, Json} ->
-      {[{<<"token">>, Fkey}]} = jiffy:decode(Json),
-      {ok, binary_to_list(Fkey)};
-    {ok, "401", _Headers, _Body} ->
+  case hackney:post(<<Fyler/binary, "/api/auth">>, [], LoginPass, []) of
+    {ok, 200, _Headers, ClientRef} ->
+      case hackney:body(ClientRef) of
+        {ok, Body} ->
+          {[{<<"token">>, Fkey}]} = jiffy:decode(Body),
+          {ok, binary_to_list(Fkey)};
+        {error, _Reason} ->
+          auth_failed
+      end;
+    {ok, 401, _Headers, _Body} ->
       ?E("Wrong login or password"),
       auth_failed;
     _ ->

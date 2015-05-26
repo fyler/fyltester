@@ -7,7 +7,7 @@
     stdlib,
     lager,
     cowboy,
-    ibrowse
+    hackney
   ]},
   {mod, {fyltester_app, []}},
   {env, []}
